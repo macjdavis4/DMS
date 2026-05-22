@@ -49,10 +49,11 @@ storage/
 uploads/
 !storage/.gitkeep
 
-# database backups
+# database backups (but DO commit Prisma migrations)
 backups/
 *.sql
 *.dump
+!prisma/migrations/**/*.sql
 
 # OS
 Thumbs.db
