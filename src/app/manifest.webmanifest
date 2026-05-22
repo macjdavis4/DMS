@@ -1,0 +1,10 @@
+{
+  "name": "Forklift DMS",
+  "short_name": "DMS",
+  "description": "Dealer Management System for forklifts",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#0f172a",
+  "icons": []
+}

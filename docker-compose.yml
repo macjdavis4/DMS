@@ -1,0 +1,84 @@
+# Production-style stack for self-hosting the Forklift DMS in the office or
+# on a single DigitalOcean droplet. For development, use `pnpm dev` against
+# a local Postgres (`docker compose up -d postgres`).
+#
+# All persistent state is in named volumes that you should back up:
+#   * pgdata    — PostgreSQL data directory
+#   * storage   — uploaded photos, data cards, attachments
+#   * backups   — nightly pg_dump + file snapshots
+#
+# The `cron` service runs the backup script every night at 02:15.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-dms}
+      POSTGRES_USER: ${POSTGRES_USER:-dms}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-dms} -d ${POSTGRES_DB:-dms}']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    # Not exposed publicly — only the app talks to the DB over the docker network.
+    ports: []
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://${POSTGRES_USER:-dms}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-dms}?schema=public
+      NEXTAUTH_URL: ${NEXTAUTH_URL:?set NEXTAUTH_URL}
+      AUTH_SECRET: ${AUTH_SECRET:?set AUTH_SECRET}
+      STORAGE_ROOT: /data/storage
+      BACKUP_DIR: /data/backups
+      GOOGLE_APPLICATION_CREDENTIALS: ${GOOGLE_APPLICATION_CREDENTIALS:-}
+      LOG_LEVEL: info
+    volumes:
+      - storage:/data/storage
+      - backups:/data/backups
+      # Mount Google service-account JSON read-only if OCR is enabled
+      - ${GOOGLE_CREDS_HOST_PATH:-/dev/null}:/run/google-creds.json:ro
+    ports:
+      - '${APP_PORT:-3000}:3000'
+
+  # Nightly backup. Uses an alpine image with pg_dump + node available.
+  cron:
+    image: node:22-alpine
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-dms}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-dms}?schema=public
+      STORAGE_ROOT: /data/storage
+      BACKUP_DIR: /data/backups
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-30}
+    volumes:
+      - storage:/data/storage:ro
+      - backups:/data/backups
+      - ./scripts:/scripts:ro
+      - ./node_modules:/scripts/node_modules:ro
+    entrypoint:
+      - sh
+      - -c
+      - |
+        apk add --no-cache postgresql16-client tini
+        # Run at 02:15 every day. Use BusyBox crond.
+        echo '15 2 * * * cd /scripts && node /scripts/node_modules/.bin/tsx /scripts/backup.ts >> /data/backups/cron.log 2>&1' > /etc/crontabs/root
+        crond -f -L /dev/stdout
+
+volumes:
+  pgdata:
+  storage:
+  backups:
